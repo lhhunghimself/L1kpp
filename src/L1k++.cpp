@@ -1,6 +1,7 @@
 #include<fstream>
 #include<stdio.h>
 #include<string>
+#include<FCSIO.hpp>
 #include<tclap/CmdLine.h>
 #include<common.hpp>
 #include<gmm.hpp>
@@ -14,7 +15,7 @@ void process_binary_file(std::string inputFile,vector<float> *values,int nBins,b
 int main (int argc, char *argv[]){
 	using namespace std;
 	string inputFile,outputFile,inputDir,list,refList,inqRefTextFile,inqRefBinFile,outDensityFile,outqRefBinFile,outqRefTextFile,outputDir,scoreFile;
- bool outBinary=0,inBinary=0,logTransform=0,outqRef=0,qNorm=0,deCon=0,pruneFlag=0,ensemble=0,clusterSeed=0,outputRawData=0;
+ bool outBinary=0,inBinary=0,logTransform=0,convert=0,outqRef=0,qNorm=0,deCon=0,pruneFlag=0,ensemble=0,clusterSeed=0,outputRawData=0;
  int minBeads=MINBEADS,nThreads=1,metaData=0,nGroups=1;
  float minLogValue,maxLogValue,smoothHalfWindowSize,peakGridSize,densityHalfWindowSize;
 	try{  
@@ -42,6 +43,7 @@ int main (int argc, char *argv[]){
 	 ValueArg<int>nGroupsArg("","nGroups","number of groups to group together - for testing purposes",false,1,"int");	
 
 	 SwitchArg clusterSeedArg ("","clusterSeed","fit using cluster centers as start point",cmd,false);
+	 SwitchArg convertArg ("c","convert","indicates that the input file will be converted to another format - default is lxb to binary",cmd,false);	 
 	 SwitchArg outBinaryArg ("","outBinary","indicates that the output file will be in binary - default is text",cmd,false);
 	 SwitchArg inBinaryArg ("","inBinary","indicates that the input file is a binary file - default is lxb",cmd,false);
 	 SwitchArg logTransformArg ("l","logTransform","indicates that input file is to be logTransformed",cmd,false);	 	 
@@ -73,6 +75,7 @@ int main (int argc, char *argv[]){
 	 outBinary=outBinaryArg.getValue();
 	 inBinary=inBinaryArg.getValue();
 	 logTransform=logTransformArg.getValue();
+	 convert=convertArg.getValue();
   inputFile= inputFileArg.getValue();  
   outputFile= outputFileArg.getValue();
   inputDir=inputDirArg.getValue();  
@@ -102,6 +105,90 @@ int main (int argc, char *argv[]){
 	{ cerr << "error: " << e.error() << " for arg " << e.argId() << endl; }
  cerr << list <<endl;
  
+ //conversion routines
+ //these routines were used to convert lxb files to level1.5 binary files
+ //should move these into a separate toolbox for file conversions
+ 
+ if(convert){
+		//convert a list of lxb files to a binary file
+ 	size_t counts[NCOLORS1OFF]; //0 analyte is present - indicates error?
+	 memset(counts,0,(NCOLORS1OFF)*sizeof(size_t));
+	 if(inputDir != ""){ 
+		 namespace fs = boost::filesystem;
+   if ( fs::exists(inputDir) && fs::is_directory(inputDir)){
+			 cerr << "working on directory " << inputDir << endl;
+
+    fs::directory_iterator end_itr;
+    fs::path p(inputDir); 
+    fs::create_directory(inputDir+"_b");
+
+  			 //gather all the filenames - this is necessary for OpenMP parallelization 
+    vector <string> files;
+    for (fs::directory_iterator itr(p); itr != end_itr; ++itr){
+				 if (is_regular_file(itr->path())) {
+   		 if(inBinary){
+					 	files.push_back(itr->path().stem().string()+itr->path().extension().string());
+					 }	      
+					 else if(itr->path().extension().string() == ".lxb"){
+					 	files.push_back(itr->path().stem().string()+itr->path().extension().string());
+					 }
+					 else{
+				 		continue;
+			 		}	 
+			 	}
+			 }
+		  #pragma omp parallel for num_threads(nThreads)  
+    for (int f=0;f<files.size();f++){
+					//read in each lxb file into values vector
+				 vector<float> values[NCOLORS1OFF];
+     string file = files[f];
+     cerr << "checking file " << inputDir+"/"+file <<" of type binary" <<endl;
+     if(file.substr(file.length()-4,4) == ".lxb"){
+					 process_lxb_file(inputDir+"/"+file,values,NCOLORS1OFF,logTransform);
+				 }   
+				 string outputFile=inputDir+"_b/"+file+".bin";
+				 cerr << "converting file to outputFile " << outputFile <<endl;
+		 	 FILE *outfp=fopen(outputFile.c_str(),"w");
+		 	 for (int i=1; i<NCOLORS1OFF; ++i){
+		 	  if(values[i].size()){
+		 	  	int16_t buffer[2];
+		 	  	buffer[0]=i;
+		 	  	buffer[1]=(int16_t)values[i].size();
+		 	  	fwrite (buffer ,sizeof(int16_t),2,outfp);
+	      for(int k=0;k<values[i].size();k++){
+					 	 int16_t v =(int16_t) (values[i][k]+.5);
+		 	  		fwrite (&(v),sizeof(int16_t),1,outfp);
+					  }
+		 	  }
+		 	 }
+		 	 fclose(outfp);
+			 }
+			}
+	 }	
+	 else if(inputFile!=""){
+   cerr << "checking file " << inputFile <<endl;
+   vector<float> values[NCOLORS1OFF];
+   if(inputFile.substr(inputFile.length()-4) == ".lxb"){
+			 process_lxb_file(inputFile,values,NCOLORS1OFF,logTransform);
+		 }	
+		 string outputFile=inputFile.substr(0,inputFile.length()-4) +".bin";
+	  cerr << "converting file to outputFile " << outputFile <<endl;
+		 FILE *outfp=fopen(outputFile.c_str(),"w");
+		 for (int i=1; i<NCOLORS1OFF; ++i){
+		 	if(values[i].size()){
+		 	 int16_t buffer[2];
+		 	 buffer[0]=i;
+		 	 buffer[1]=(int16_t)values[i].size();
+		 	 fwrite (buffer ,sizeof(int16_t),2,outfp);
+	    for(int k=0;k<values[i].size();k++){
+						int16_t v =(int16_t) values[i][k]+.5;
+		 	 	fwrite (&(v),sizeof(int16_t),1,outfp);
+					}
+		 	}
+		 }
+		 fclose(outfp);
+		}
+	}
 	//routines to make qNormed baseline files 
  if(outqRefBinFile != "" && refList == "" && list != ""){ //make qNorm files from list of files and save
   fprintf (stderr,"refList not given - using list %s to generate quantile normalization reference file\n",list.c_str()); 
@@ -235,7 +322,7 @@ int main (int argc, char *argv[]){
 	}
  //are we dumping out a density file
  if(outDensityFile != ""){
-		wells.dumpDensity(outDensityFile,smoothHalfWindowSize);
+		wells.dumpDensity(outDensityFile,densityHalfWindowSize);
 	}	
 	return(1);
 }
@@ -256,4 +343,35 @@ void process_binary_file(std::string inputFile,vector<float> *values,int nBins,b
 		}
 	}
 	fclose(fp);
+}
+void process_lxb_file(std::string inputFile,vector<float> *values,int nBins,bool logTransform){
+ using namespace FCSTools;
+ std::fstream file (inputFile, std::ios::binary|std::ios::in);
+ FCS<std::size_t> fcs= Reader<std::size_t> (file, 1);
+ int nRecords=fcs.Data.size ();
+ int colRID,colRP1;
+ //find the RID and RP1 records 
+ for (int i=0; i<fcs.Head.Parameter.size();++i){
+		if(fcs.Head.Parameter[i].Name == "RID"){
+			colRID=i;
+		}
+		else if(fcs.Head.Parameter[i].Name == "RP1"){
+			colRP1=i;
+		}
+	}
+	if(logTransform){
+ 	for (int i=0; i<fcs.Data.size(); ++i){
+ 	 if(fcs.Data[i][colRID] && fcs.Data[i][colRID]<nBins){
+ 			if(fcs.Data[i][colRP1] <= 2) values[fcs.Data[i][colRID]].push_back(1);
+ 			else values[fcs.Data[i][colRID]].push_back(log(fcs.Data[i][colRP1])*INVLOG2);
+ 		}
+ 	}
+	}
+	else{	
+	 for (int i=0; i<fcs.Data.size(); ++i){
+	  if(fcs.Data[i][colRID] && fcs.Data[i][colRID]<nBins){
+	   values[fcs.Data[i][colRID]].push_back(fcs.Data[i][colRP1]);
+		 }
+		}
+	}
 }
