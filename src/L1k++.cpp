@@ -216,7 +216,9 @@ int main (int argc, char *argv[]){
 		ref.write_textRefFile(outqRefTextFile.c_str());
 	 return(1);
 	}
-		//read the list of files in binary format
+	//if we are not doing a conversion or making baseline files - we are deconvoluting
+	
+	//read the list of files in binary format
 	wellRecord <int16_t,int> wells(list,minLogValue,maxLogValue,smoothHalfWindowSize,peakGridSize);
  for(int i=0;i<wells.groupNames.size();i++){
 		fprintf(stderr,"%d %d name %s offset %d\n",i,wells.nTotalWells,wells.groupNames[i].c_str(),wells.groupOffsets[i]);
@@ -277,7 +279,7 @@ int main (int argc, char *argv[]){
 				fpAllPeaks=fopen(outputFile.c_str(),"w");
 			}				
 			//deconvolute individual groups
-			//make sure that there are no remainders - i.e we are really using 
+			//make sure that there are no remainders
 			int nIterations=(wells.groupNames.size()/nGroups)*nGroups;
 			if(outputDir != ""){
 				 #pragma omp parallel for num_threads(nThreads)  
