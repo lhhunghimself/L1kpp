@@ -14,14 +14,13 @@ void process_binary_file(std::string inputFile,vector<float> *values,int nBins,b
 
 int main (int argc, char *argv[]){
 	using namespace std;
-	string inputFile,outputFile,inputDir,list,refList,inqRefTextFile,inqRefBinFile,outDensityFile,outqRefBinFile,outqRefTextFile,outputDir,scoreFile;
- bool outBinary=0,inBinary=0,logTransform=0,convert=0,outqRef=0,qNorm=0,deCon=0,pruneFlag=0,ensemble=0,clusterSeed=0,outputRawData=0;
+	string inputFile,outputFile,inputDir,list,refList,inqRefTextFile,inqRefBinFile,outDensityFile,outqRefBinFile,outqRefTextFile,outputDir;
+ bool outBinary=0,inBinary=0,logTransform=0,convert=0,outqRef=0,qNorm=0,deCon=0,pruneFlag=0,ensemble=0,outputRawData=0;
  int minBeads=MINBEADS,nThreads=1,metaData=0,nGroups=1;
  float minLogValue,maxLogValue,smoothHalfWindowSize,peakGridSize,densityHalfWindowSize;
 	try{  
   using namespace TCLAP;
 	 CmdLine cmd("lxbdecon flags", ' ', "0.1");
-	 ValueArg<string>	scoreFileArg ("s","scoreFile","score the wells using this a given density file",false,"","string"); 
 	 ValueArg<string> inputDirArg ("d","dir","input lxb directory",false,"","string");
 	 ValueArg<string> outputDirArg ("","outputDir","output directory",false,"","string");		
 	 ValueArg<string> inputFileArg ("i","inFile","input lxb file",false,"","string");	 
@@ -42,7 +41,6 @@ int main (int argc, char *argv[]){
 	 ValueArg<float> peakGridSizeArg ("","peakGridSize","maximum expression value in log2 scale ",false,0.2,"float");
 	 ValueArg<int>nGroupsArg("","nGroups","number of groups to group together - for testing purposes",false,1,"int");	
 
-	 SwitchArg clusterSeedArg ("","clusterSeed","fit using cluster centers as start point",cmd,false);
 	 SwitchArg convertArg ("c","convert","indicates that the input file will be converted to another format - default is lxb to binary",cmd,false);	 
 	 SwitchArg outBinaryArg ("","outBinary","indicates that the output file will be in binary - default is text",cmd,false);
 	 SwitchArg inBinaryArg ("","inBinary","indicates that the input file is a binary file - default is lxb",cmd,false);
@@ -51,7 +49,6 @@ int main (int argc, char *argv[]){
 	 SwitchArg ensembleArg ("e","ensemble","indicates that input file or list of files will be treated as one large experiment",cmd,false);	 
 	 SwitchArg deConArg ("","deCon","deConvolute spectra",cmd,false);
   SwitchArg outputRawDataArg ("","outputRawData","the raw expression numbers are outputted for each experiment",cmd,false); 
-  cmd.add(scoreFileArg);
 	 cmd.add(inputFileArg);
 	 cmd.add(inputDirArg);	 
 	 cmd.add(outputDirArg);
@@ -97,7 +94,6 @@ int main (int argc, char *argv[]){
   peakGridSize=peakGridSizeArg.getValue();
   smoothHalfWindowSize=smoothHalfWindowSizeArg.getValue();
   densityHalfWindowSize=densityHalfWindowSizeArg.getValue();
-  clusterSeed=clusterSeedArg.getValue();
   nGroups=nGroupsArg.getValue();
   outputRawData=outputRawDataArg.getValue();
 	} 
