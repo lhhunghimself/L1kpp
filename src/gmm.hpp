@@ -2,6 +2,7 @@
 #include <ctime>
 #include <fstream>
 #include <cmath>
+#include <random>
 #include <boost/math/distributions/binomial.hpp>
 #include <boost/math/distributions/normal.hpp>
 #include <boost/math/special_functions/digamma.hpp>
@@ -12,16 +13,55 @@
 #define PEAKWIDTH 0.325
 #define MAX_EM_ITERATIONS 500
 #define EM_CONVERGE 1e-3
+//this is used for the minimum logValue as well - to distinguish it from an undef value which is 0
 #define MIN_NOISE 1e-8
  //lookup tables
 static double logx[32768]; //log base2
 static double lnx[32768];  //natural logs
  
 void init_logx();
-template <class T> int fitLogNormMADS(T *smooth, int nBins,vector<T> &peakBins,vector<T> &peakValues, vector<T> &peakMeans);	
 template <class T> int fitLogNormEM(T *smooth, int nBins,vector<T> &peakBins,vector<T> &peakValues, vector<T> &peakMeans);
 using namespace std;
 using namespace boost::math;
+
+
+template <class T> class MedianRecord{
+	public:
+	 vector<T> means0;
+	 vector<T> means1;
+	 T median0;
+	 T median1;
+		MedianRecord(){		
+   blank();
+	 }
+  void blank(){
+			const T null=std::numeric_limits<T>::quiet_NaN();
+			means0.clear();
+			means1.clear();
+			median0=null;
+		 median1=null;				
+		}
+
+	 void addValues(T mean0, T mean1){
+			if(!mean0 || !mean1 || isnan(mean0) || isnan(mean1)) return;
+			means0.push_back(mean0);
+			means1.push_back(mean1);
+		}
+		void calculate_medians()	{
+			if( means0.size() &&  means1.size() ){
+    median0=median(means0.begin(),means0.end());
+	   median1=median(means1.begin(),means1.end());
+			}
+		}
+		private:	
+  template <typename Iterator>  T median(Iterator begin, Iterator end) {
+	 Iterator middle = begin + (end - begin)/2;
+	 std::nth_element(begin, middle, end);
+  if ((end - begin) % 2) return *middle;
+		Iterator lower_middle = std::max_element(begin, middle);
+		return (*middle + *lower_middle) / 2.0;
+ }	   
+};
 
 template <class T> class DeconRecord{
 	public:
@@ -578,8 +618,9 @@ void init_logx(){
 	}
 }
 template <class T> void transferData(int color,DeconRecord<T> &deconRecord,EM_GMM<T> &EM){
-	deconRecord.means0[color]=EM.mean0*INVLOG2;
-	deconRecord.means1[color]=EM.mean1*INVLOG2;	
+	
+	deconRecord.means0[color]=(EM.mean0*INVLOG2 < MIN_NOISE)? MIN_NOISE : EM.mean0*INVLOG2;
+	deconRecord.means1[color]=(EM.mean1*INVLOG2 < MIN_NOISE)? MIN_NOISE : EM.mean1*INVLOG2;
 	deconRecord.meansEst0[color]=EM.meanEst0*INVLOG2;
 	deconRecord.meansEst1[color]=EM.meanEst1*INVLOG2;
 	deconRecord.stdevs0[color]=sqrt(EM.var0)*INVLOG2;
@@ -592,6 +633,7 @@ template <class T> void transferData(int color,DeconRecord<T> &deconRecord,EM_GM
 	if((EM.meanEst0-EM.meanEst1)*(EM.mean0-EM.mean1) <0) deconRecord.flipped[color]=1;
 	else	 deconRecord.flipped[color]=0;
 }
+
 template <typename T1, typename T2> class wellRecord{
 	//qnorm is done by well
 	//these are then combined
@@ -772,32 +814,30 @@ template <typename T1, typename T2> class wellRecord{
 	  }
 		 for (int i=1; i<=NCOLORS; i++){
 			 fill(smooth,smooth+32768,0);	
-			 int nBins=logWindowSmooth(lower,upper,smooth,i);
+			 int nBins=logWindowSmooth(lower,upper,smooth,&(values[i][0]),values[i].size());
 		 	fwrite(smooth,1,32768*sizeof(float),fp);
 			}
 		 fclose(fp);
 		}
 	}
-	template <class T> int logWindowSmooth(int *lower,int *upper,T *smooth,int color){
+template<class Ta, class Tb> int logWindowSmooth(int *lower,int *upper,Ta *smooth,Tb *colorValues,int nValues){
 		int maxBin=0;
 		int counts[32768];
 		fill(counts,counts+32768,0);	
 		double totalWeight=0;
-		for(int i=0;i<values[color].size();i++){
-		 counts[values[color][i]]++;
+		for(int i=0;i<nValues;i++){
+		 counts[colorValues[i]]++;
 	 }
 		for(int i=1;i<32768;i++){
 		 if(counts[i])maxBin=i;	
 	 }		
-
 		for(int i=1;i<=maxBin;i++){
    int sum=0;
    //const int limit=(upper[i]<maxBin)? maxBin:upper[i];
 	 	for(int k=lower[i];k<=upper[i];k++){
 				sum+=counts[k];
 			}
-
-			smooth[i]=(T)sum/(T)(upper[i]-lower[i]+1);
+			smooth[i]=(Ta)sum/(Ta)(upper[i]-lower[i]+1);
 			//fprintf(stderr,"%d %d %d %e\n",i,lower[i],upper[i],smooth[i]);	
 		 totalWeight+=smooth[i];
 		}
@@ -805,34 +845,6 @@ template <typename T1, typename T2> class wellRecord{
 		for(int i=0;i<=maxBin;i++){
 		 smooth[i]*=invTotalWeight;
 	 }
-		return(maxBin+1);
-	}
-	template <class T> int logWindowSmooth(int *lower,int *upper,T *smooth,int color,int fn){
-		//smooths a single file in the wells record
-		int maxBin=0;
-		int counts[32768];
-		fill(counts,counts+32768,0);	
-		double totalWeight=0;
-		for(int i=offsets[color][fn];i<offsets[color][fn+1];i++){
-		 counts[values[color][i]]++;
-	 }
-		for(int i=1;i<32768;i++){
-		 if(counts[i])maxBin=i;	
-	 }		
-
-		for(int i=1;i<=maxBin;i++){
-   int sum=0;
-	 	for(int k=lower[i];k<=upper[i];k++){
-				sum+=counts[k];
-			}
-			smooth[i]=(T)sum/(T)(upper[i]-lower[i]+1);
-		 totalWeight+=smooth[i];
-		}
-		double invTotalWeight=1.0/totalWeight;
-		for(int i=0;i<=maxBin;i++){
-		 smooth[i]*=invTotalWeight;
-	 }
-
 		return(maxBin+1);
 	}
 	template <class T> double dampenLowNoise(T *smooth,int nBins){
@@ -1037,7 +1049,7 @@ template <typename T1, typename T2> class wellRecord{
 			fill(smooth,smooth+32768,0);
 			vector<T> peakValues,peakMeans;
 			vector<int>peakBins;			
-			int nBins=logWindowSmooth(lower,upper,smooth,i);
+			int nBins=logWindowSmooth(lower,upper,smooth,&(values[i][0]),values[i].size());
 			double lowNoiseFraction=dampenLowNoise(smooth,nBins);
 			if(fpSmooth)fwrite(smooth,1,32768*sizeof(T),fpSmooth);
 			fill(counts,counts+32768,0);
@@ -1058,11 +1070,11 @@ template <typename T1, typename T2> class wellRecord{
 			}
 		}
 	}
-	template <class T> int deconvolute(int n,int nGroups,DeconRecord<T> &deconRecord,FILE *fpRaw){
-		return(deconvolute_peakSeed(n,nGroups,deconRecord,fpRaw));
+	template <class T> int deconvolute(int nFold,int n,int nGroups,vector<DeconRecord<T>> &deconRecords,vector<MedianRecord<T>>&medianRecords,FILE *fpRaw){
+		return deconvolute_peakSeed(nFold,n,nGroups,deconRecords,medianRecords,fpRaw);
+		//return deconvolute_peakSeed(n,nGroups,deconRecords[0],fpRaw);
 	}	
  template <class T> int deconvolute_peakSeed(int n,int nGroups,DeconRecord<T> &deconRecord,FILE *fpRaw){
-		//do not smooth for small samples
 	 if(!logx[2]){init_logx();}
 		int counts[32768];
 		fill(counts,counts+32768,0);
@@ -1074,16 +1086,15 @@ template <typename T1, typename T2> class wellRecord{
 			const int finish= offsets[i][finalGroupOffset];
 			int nBins=0;
 			T nPoints=finish-start;
-			if(nPoints > MINBEADS){ 
-			 vector<T> peakValues,peakMeans;
+			if(nPoints >= MINBEADS){ 
 			 vector<int>peakBins;
 			 peakBins.resize(2);		
+			 
 			 fill(counts,counts+32768,0);
 			 for(int k=start;k<finish;k++){
 					if(values[i][k]>nBins) nBins=values[i][k]+1;
 			  counts[values[i][k]]++;
 				}
- 
 			 if(fpRaw) fwrite(counts,1,32768*sizeof(int),fpRaw);
     peakBins[0]=pow(2,8.1);
     peakBins[1]=pow(2,7.9);		 
@@ -1093,7 +1104,7 @@ template <typename T1, typename T2> class wellRecord{
 					int k=0;
 					while (k<minValue){
 						nPoints-=counts[k];
-						tcounts[k]=counts[k];
+						//tcounts[k]=counts[k];
 						k++;
 					}
 					while (k<32768){
@@ -1105,6 +1116,7 @@ template <typename T1, typename T2> class wellRecord{
 				}
 			}
 			else{
+			 deconRecord.dataSizes[i]=finish-start;
 				if(fpRaw){
 		   fill(counts,counts+32768,0);
 		   for(int k=start;k<finish;k++)
@@ -1112,6 +1124,69 @@ template <typename T1, typename T2> class wellRecord{
 	    fwrite(counts,1,sizeof(int)*32768,fpRaw);
 			 }				
 			}	
+		}
+		return(1);
+	}
+	template <class T> int deconvolute_peakSeed(int nFold,int n,int nGroups,vector<DeconRecord<T>> &deconRecords,vector<MedianRecord<T>>&medianRecords,FILE *fpRaw){
+  //this overload takes 1/10 slices and finds the median value
+	 if(!logx[2]){init_logx();}
+		int counts[32768];
+	 if (fpRaw) fwrite(counts,1,sizeof(T)*32768,fpRaw);
+	 int finalGroupOffset= (n+nGroups >= groupOffsets.size())? groupOffsets[groupOffsets.size()-1] : groupOffsets[n+nGroups];
+	 //fprintf(stderr,"%d start %d final offset %d\n",n,groupOffsets[n],finalGroupOffset);
+		for (int i=1; i<=NCOLORS; i++){
+			const int start=offsets[i][groupOffsets[n]];
+			const int finish= offsets[i][finalGroupOffset];			
+			if(i >10){
+			 int nBins=0;
+			 int totalPoints=finish-start;
+			 if(totalPoints >= MINBEADS){ 
+			  vector<int>peakBins(2);
+			  vector<unsigned int>foldIndices=getFolds(totalPoints,nFold);; 
+			  for(int f=0;f<nFold;f++){
+						int nPoints=0;
+						fill(counts,counts+32768,0);
+						unsigned int j=0;
+		  	 for(int k=start;k<finish;k++){
+							if(nFold >1 && foldIndices[j++] == f ) continue;
+		  			if(values[i][k]>nBins) nBins=values[i][k]+1;
+		 	   counts[values[i][k]]++;
+		 	   nPoints++;
+		 	 	}
+		 	  if(fpRaw) fwrite(counts,1,32768*sizeof(int),fpRaw);
+      peakBins[0]=pow(2,8.1);
+      peakBins[1]=pow(2,7.9);		 
+
+			 		T tcounts[32768];
+			 		fill(tcounts,tcounts+32768,0);
+			 		int k=0;
+			 		while (k<minValue){
+				 		nPoints-=counts[k];
+			 			//tcounts[k]=counts[k];
+				 		k++;
+				 	}
+				 	while (k<32768){
+	 		 	 tcounts[k]=counts[k];
+	 		 	 k++;
+ 			  }
+      fitLogNormEM(tcounts,0,nBins,nPoints,peakBins,deconRecords[f],i,1,1);
+      medianRecords[i].addValues(deconRecords[f].means0[i], deconRecords[f].means1[i]);
+      deconRecords[f].noiseFractions[i]=1.0-(nPoints/(T)(totalPoints));
+				 }
+				}
+			}
+			else{
+				//write a blank Deconrecord with nPoints
+				for(int f=0;f<nFold;f++){
+				 deconRecords[f].dataSizes[i]=finish-start;
+				}
+				if(fpRaw){
+		   fill(counts,counts+32768,0);
+		   for(int k=start;k<finish;k++)
+			   counts[values[i][k]]++;
+	    fwrite(counts,1,sizeof(int)*32768,fpRaw);
+			 }				
+			}
 		}
 		return(1);
 	}
@@ -1161,7 +1236,6 @@ template <typename T1, typename T2> class wellRecord{
 
   for(int j=0;j<mus.size()-1;j++){
 			for (int k=j+1;k<mus.size();k++){ 
-
 				EM.reset(mus[j],mus[k],sigmasqs[0],sigmasqs[1],MIXTURE_RATIO); 
 				int converged=EM.optimize(MIXTURE_RATIO);
 				double likelihood=EM.loglikelihood;   
@@ -1181,4 +1255,20 @@ template <typename T1, typename T2> class wellRecord{
 			}	 
 		}
  }	  
+	vector<unsigned int> getFolds(unsigned int size, unsigned int nFold){
+		//for assigning nfolds
+		vector<unsigned int> shuffledIndices(size);
+  std::random_device rd;
+  std::mt19937 rng(rd());
+		for(unsigned int i=0;i<size;i++){
+			shuffledIndices[i]=i%nFold;
+		}
+		for	(unsigned int i=0;i<size;i++){
+			std::uniform_int_distribution<int> uni(i,size-1);
+			unsigned int j=uni(rng);
+ 	 swap(shuffledIndices[i],shuffledIndices[j]);
+		}
+		return shuffledIndices;
+	}		
 };
+

@@ -16,15 +16,14 @@ int main (int argc, char *argv[]){
 	using namespace std;
 	string inputFile,outputFile,inputDir,list,refList,inqRefTextFile,inqRefBinFile,outDensityFile,outqRefBinFile,outqRefTextFile,outputDir;
  bool outBinary=0,inBinary=0,logTransform=0,convert=0,outqRef=0,qNorm=0,deCon=0,pruneFlag=0,ensemble=0,outputRawData=0;
- int minBeads=MINBEADS,nThreads=1,metaData=0,nGroups=1;
+ int minBeads=MINBEADS,nThreads=1,metaData=0,nGroups=1,nFold=1;
  float minLogValue,maxLogValue,smoothHalfWindowSize,peakGridSize,densityHalfWindowSize;
 	try{  
   using namespace TCLAP;
 	 CmdLine cmd("lxbdecon flags", ' ', "0.1");
 	 ValueArg<string> inputDirArg ("d","dir","input lxb directory",false,"","string");
-	 ValueArg<string> outputDirArg ("","outputDir","output directory",false,"","string");		
+	 ValueArg<string> outputDirArg ("o","outputDir","output directory",false,"","string");		
 	 ValueArg<string> inputFileArg ("i","inFile","input lxb file",false,"","string");	 
-	 ValueArg<string> outputFileArg ("o","outputFile","output file",false,"","string");
 	 ValueArg<string> outDensityFileArg ("","outDensityFile","output density file",false,"","string");
 	 ValueArg<string> outqRefBinFileArg ("","outqRefBinFile","make binary quantile reference density file from list of binary level 1.5 data",false,"","string");
 	 ValueArg<string> outqRefTextFileArg ("","outqRefTextFile","make text quantile reference density file from list of binary level 1.5 data",false,"","string");
@@ -40,7 +39,9 @@ int main (int argc, char *argv[]){
 	 ValueArg<float> densityHalfWindowSizeArg ("","densityHalfWindowSize","windowing size for smoothing density ",false,0.1,"float");
 	 ValueArg<float> peakGridSizeArg ("","peakGridSize","maximum expression value in log2 scale ",false,0.2,"float");
 	 ValueArg<int>nGroupsArg("","nGroups","number of groups to group together - for testing purposes",false,1,"int");	
-
+  ValueArg<int> nBootStrapsArg ("","nBootStraps","number of bootstrap runs ",false,0,"int");
+  ValueArg<int> nFoldArg ("","nFold","number of repetitions for calculating median values (1/nFold samples are excluded from each run)",false,1,"int"); 
+  ValueArg<float> bootstrapSizeArg ("","bootstrapSize","proportion of set to sample per bootstrap",false,0.8,"float");
 	 SwitchArg convertArg ("c","convert","indicates that the input file will be converted to another format - default is lxb to binary",cmd,false);	 
 	 SwitchArg outBinaryArg ("","outBinary","indicates that the output file will be in binary - default is text",cmd,false);
 	 SwitchArg inBinaryArg ("","inBinary","indicates that the input file is a binary file - default is lxb",cmd,false);
@@ -52,7 +53,6 @@ int main (int argc, char *argv[]){
 	 cmd.add(inputFileArg);
 	 cmd.add(inputDirArg);	 
 	 cmd.add(outputDirArg);
-	 cmd.add(outputFileArg);
 	 cmd.add(metaDataArg);
 	 cmd.add(nThreadsArg);	 	 
 	 cmd.add(nGroupsArg);	 
@@ -67,6 +67,7 @@ int main (int argc, char *argv[]){
 	 cmd.add(maxLogValueArg);
 	 cmd.add(smoothHalfWindowSizeArg);
 	 cmd.add(densityHalfWindowSizeArg);
+	 cmd.add(nFoldArg);
 	 cmd.parse( argc, argv );
 
 	 outBinary=outBinaryArg.getValue();
@@ -74,7 +75,6 @@ int main (int argc, char *argv[]){
 	 logTransform=logTransformArg.getValue();
 	 convert=convertArg.getValue();
   inputFile= inputFileArg.getValue();  
-  outputFile= outputFileArg.getValue();
   inputDir=inputDirArg.getValue();  
   outputDir=outputDirArg.getValue();
   metaData=metaDataArg.getValue();
@@ -96,6 +96,7 @@ int main (int argc, char *argv[]){
   densityHalfWindowSize=densityHalfWindowSizeArg.getValue();
   nGroups=nGroupsArg.getValue();
   outputRawData=outputRawDataArg.getValue();
+  nFold=nFoldArg.getValue();
 	} 
 	catch (TCLAP::ArgException &e)  // catch any exceptions
 	{ cerr << "error: " << e.error() << " for arg " << e.argId() << endl; }
@@ -242,82 +243,70 @@ int main (int argc, char *argv[]){
 	}
 	//do we deconvolute?
 	if(deCon){
-		if(outBinary){
+	 if(outBinary){
 			//check if we are outputing binary files
 			metaData=-1;
 		}	
-		//do we treat this as an ensemble or as individual files 
-  if(ensemble){
-			DeconRecord <float> deconRecord; 
-   if(outputFile != ""){
-				string rawOutputFile=outputFile+".raw";
-				string smoothOutputFile=outputFile+".smooth";
-				string peaksFile=outputFile+".peaks";
-				FILE *fpRaw=fopen(rawOutputFile.c_str(),"w");
-				FILE *fpSmooth=fopen(smoothOutputFile.c_str(),"w");
-				wells.deconvolute(deconRecord,fpRaw,fpSmooth);
-		  fclose(fpRaw);
-		  fclose(fpSmooth);
-				FILE *fpPeaks=fopen(peaksFile.c_str(),"w");
-				deconRecord.print_text(fpPeaks,metaData);
-				fclose(fpPeaks);
-			}   
-			else{	
-				wells.deconvolute(deconRecord,0,0);
-				deconRecord.print_text(stdout,metaData);
-			}	
-	 }
-	 else{
-			//decon individual wells
-			vector <DeconRecord <float>> deconRecords(nThreads);
-			FILE *fpAllPeaks=0;
-			if(outputFile != ""){					
-				fpAllPeaks=fopen(outputFile.c_str(),"w");
-			}				
-			//deconvolute individual groups
-			//make sure that there are no remainders
-			int nIterations=(wells.groupNames.size()/nGroups)*nGroups;
-			if(outputDir != ""){
-				 #pragma omp parallel for num_threads(nThreads)  
-			 for(int i=0;i<nIterations;i+=nGroups){
-					int t=0;
-					if(nThreads >1){
-						t=omp_get_thread_num();
+		//decon individual wells
+		if(outputDir == "" ){
+			char buffer [L_tmpnam];
+   tmpnam (buffer);
+   string bufferStr=buffer;
+   outputDir=="output_"+bufferStr;
+		}
+		//deconvolute individual groups
+		//make sure that there are no remainders
+		 int nIterations=(wells.groupNames.size()/nGroups)*nGroups;
+		 #pragma omp parallel num_threads(nThreads)
+			{
+				vector <DeconRecord <float>> deconRecords(nFold); 
+				vector <MedianRecord<float>> medianRecords(501);   
+		  for(int i=0;i<nIterations;i+=nGroups){
+			 	int t=0;
+			 	if(nThreads >1){
+			 		t=omp_get_thread_num();
+				 }
+				 //initialize the deconRecord to nans and zeros 
+				 for(int f=0;f<nFold;f++){
+						deconRecords[f].blank();
 					}	
-				 string groupName=wells.groupNames[i];
-					FILE *fpRaw=0;	
-					if(outputRawData){				
-					 string rawOutputFile=outputDir+"/"+groupName+".raw";
-					 fpRaw=fopen(rawOutputFile.c_str(),"w");
-					}
-				 string peaksFile=outputDir+"/"+groupName+".peaks";
-				 if(wells.deconvolute(i,nGroups,deconRecords[t],fpRaw)){
-						FILE *fpPeaks=fopen(peaksFile.c_str(),"w");
-						deconRecords[t].print_text(fpPeaks,metaData);		
+					for(int k=0;k<501;k++){
+					 medianRecords[k].blank();
+					} 
+			  string groupName=wells.groupNames[i];
+				 FILE *fpRaw=0;	
+				 if(outputRawData){				
+				  string rawOutputFile=outputDir+"/"+groupName+".raw";
+				  fpRaw=fopen(rawOutputFile.c_str(),"w");
+				 }
+			  string peaksFile=outputDir+"/"+groupName+".peaks";
+			  string medianFile=outputDir+"/"+groupName+".medians";
+			  if(wells.deconvolute(nFold,i,nGroups,deconRecords,medianRecords,fpRaw)){
+				 	FILE *fpPeaks=fopen(peaksFile.c_str(),"w");
+				 	for(int f=0;f<nFold;f++){
+				 	 deconRecords[f].print_text(fpPeaks,metaData);
+						}
 						fclose(fpPeaks);
-					}
-					if(fpRaw)	fclose(fpRaw);
+						FILE *fpMedian=fopen(medianFile.c_str(),"w");
+						for	(int k=0;k<501;k++){
+							medianRecords[k].calculate_medians();
+							fprintf(fpMedian,"%d %f ",k,medianRecords[k].median0);
+							for(int f=0;f<medianRecords[k].means0.size();f++){
+							 fprintf(fpMedian,"%f:",medianRecords[k].means0[f]);
+							}
+							fprintf(fpMedian," %f ",medianRecords[k].median1);
+							for(int f=0;f<medianRecords[k].means0.size();f++){
+							 fprintf(fpMedian,"%f:",medianRecords[k].means1[f]);
+							}
+							fprintf(fpMedian,"\n");
+						}		
+				 	fclose(fpMedian);
+				 }
+				 if(fpRaw)	fclose(fpRaw);
 				}
 			}
-			else{
-				for(int i=0;i<nIterations;i+=nGroups){
-					int t=0;
-				 if(wells.deconvolute(i,nGroups,deconRecords[t],0)){
-						string groupName=wells.groupNames[i];
-						if(fpAllPeaks){
-						 fprintf(fpAllPeaks,"%s\n",groupName.c_str());
-						 deconRecords[t].print_text(fpAllPeaks,metaData);
-						}
-						else{
-						 fprintf(stdout,"%s\n",groupName.c_str());
-						 deconRecords[t].print_text(stdout,metaData);
-						}		
-					}		
-				}
-			}		
-			if(fpAllPeaks)fclose(fpAllPeaks);
 		}
-	}
+	
  //are we dumping out a density file
  if(outDensityFile != ""){
 		wells.dumpDensity(outDensityFile,densityHalfWindowSize);
@@ -373,3 +362,4 @@ void process_lxb_file(std::string inputFile,vector<float> *values,int nBins,bool
 		}
 	}
 }
+
